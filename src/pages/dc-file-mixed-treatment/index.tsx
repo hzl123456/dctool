@@ -5,9 +5,13 @@
 import type { IMixedData, IMixedItem } from '@src/pages/dc-file-mixed-treatment/types';
 
 import React, { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Form, toast, IFormBag } from '@qunhe/muya-ui';
+import { Button, Form, toast, IFormBag, Checkbox } from '@qunhe/muya-ui';
 
 import dayjs from 'dayjs';
+
+import FileSaver from 'file-saver';
+
+import JSZip from 'jszip';
 
 import { collectData } from '@common/core/point';
 
@@ -33,6 +37,7 @@ const MixedTreatmentPage = () => {
   }, []);
 
   const [loading, setLoading] = useState(false);
+  const [needExcel, setNeedExcel] = useState(true);
   const [values, setValues] = useState<IMixedData>({ data: [getDefaultItem()] });
   const formBagRef = useRef<IFormBag<IMixedData>>(null);
 
@@ -117,7 +122,9 @@ const MixedTreatmentPage = () => {
       const { data: fileValues } = values;
       setLoading(true);
       try {
+        const start = Date.now();
         const workbook = XLSX.utils.book_new(); //创建虚拟workbook
+        const zip = new JSZip(); // 创建文件夹
         const totalSet = new Set();
         const fileNameList: string[] = [];
         for (const childValue of fileValues) {
@@ -125,52 +132,92 @@ const MixedTreatmentPage = () => {
           fileNameList.push(file.name);
           const [fileName] = file.name.split('.');
           // 单独每个文件的数据
+          const channelList: string[] = [];
           const exportData: any[] = [];
+          const exportDataCSV: string[][] = [];
           const colsCellWidth: { wch: number }[] = [];
           for (const channelId of dataMap.keys()) {
-            let i = 0;
-            if (!exportData[i]) {
-              exportData[i] = {};
-            }
             const mapValue = dataMap.get(channelId)!;
             const channelIdName = `${channelId}（${mapValue.size}）`;
+            channelList.push(channelIdName);
+            let i = 0;
+            let j = 0;
             // 根据 channelIdName 和 phone 得到最后的宽度
             let cellWidth = getCellWidth(channelIdName);
             if (mapValue.size === 0) {
+              // excel 数据
+              if (!exportData[i]) {
+                exportData[i] = {};
+              }
               exportData[i] = {
                 ...exportData[i],
                 [channelIdName]: null,
               };
+              // csv 数据
+              if (!exportDataCSV[i]) {
+                exportDataCSV[i] = [];
+              }
+              exportDataCSV![i]![j] = '';
               i++;
             } else {
               for (const phone of mapValue.values()) {
+                // excel 数据
                 cellWidth = Math.max(cellWidth, getCellWidth(phone));
+                if (!exportData[i]) {
+                  exportData[i] = {};
+                }
                 exportData[i] = {
                   ...exportData[i],
                   [channelIdName]: phone,
                 };
+                // csv 数据
+                if (!exportDataCSV[i]) {
+                  exportDataCSV[i] = [];
+                }
+                exportDataCSV![i]![j] = phone;
                 // 添加所有的手机号数据
                 totalSet.add(phone);
                 i++;
               }
             }
             colsCellWidth.push({ wch: cellWidth + 0.5 });
+            // 换一列
+            j++;
           }
           // 生成一个 excel
-          const worksheet = XLSX.utils.json_to_sheet(exportData);
-          worksheet['!cols'] = colsCellWidth;
-          XLSX.utils.book_append_sheet(workbook, worksheet, fileName);
+          if (needExcel) {
+            const worksheet = XLSX.utils.json_to_sheet(exportData);
+            worksheet['!cols'] = colsCellWidth;
+            XLSX.utils.book_append_sheet(workbook, worksheet, fileName);
+          } else {
+            zip.file(
+              `${fileName}.csv`,
+              [channelList.join(','), ...exportDataCSV.map((data) => data.join(','))].join('\n')
+            );
+          }
+          console.log('ssss1->', Date.now() - start);
         }
         // 所有的数据集合
         const exportData: any[] = [];
+        const exportDataCSV: string[] = [`${TOTAl_EXP}（${totalSet.size}）`];
         for (const phone of totalSet.values()) {
           exportData.push({ [`${TOTAl_EXP}（${totalSet.size}）`]: phone });
+          exportDataCSV.push(phone as string);
         }
-        const worksheet = XLSX.utils.json_to_sheet(exportData);
-        worksheet['!cols'] = [{ wch: getCellWidth(TOTAl_EXP) + 0.5 }];
-        XLSX.utils.book_append_sheet(workbook, worksheet, TOTAl_EXP);
-        // 生成一个 excel 并导出
-        XLSX.writeFile(workbook, `文件集合-${dayjs(Date.now()).format('YYYY-MM-DD HH:mm:ss')}.xlsx`);
+        if (needExcel) {
+          const worksheet = XLSX.utils.json_to_sheet(exportData);
+          worksheet['!cols'] = [{ wch: getCellWidth(TOTAl_EXP) + 0.5 }];
+          XLSX.utils.book_append_sheet(workbook, worksheet, TOTAl_EXP);
+          // 生成一个 excel 并导出
+          XLSX.writeFile(workbook, `文件集合-${dayjs(Date.now()).format('YYYY-MM-DD HH:mm:ss')}.xlsx`);
+        } else {
+          zip.file(`总计.csv`, exportDataCSV.join('\n'));
+          // 转成压缩包然后进行保存
+          zip.generateAsync({ type: 'blob' }).then((content) => {
+            FileSaver.saveAs(content, `文件集合-${dayjs(Date.now()).format('YYYY-MM-DD HH:mm:ss')}.zip`);
+          });
+        }
+        console.log('ssss2->', Date.now() - start);
         toast.success('文件渠道混合处理成功，请保存在本地进行查看~');
         // 埋点成功的上报
         collectData({
@@ -188,7 +235,7 @@ const MixedTreatmentPage = () => {
         setLoading(false);
       }
     },
-    [getFileData]
+    [needExcel, getFileData]
   );
 
   return (
@@ -211,19 +258,25 @@ const MixedTreatmentPage = () => {
         >
           <MixedItem />
         </Form.Item>
-        <Form.Item labelPosition="left">
-          <Button
-            type="primary"
-            onClick={() => {
-              values.data.push(getDefaultItem());
-              setValues({ data: [...values.data] });
-            }}
-          >
-            新增文件
-          </Button>
-          <Button loading={loading} htmlType="submit" type="primary">
-            提交
-          </Button>
+        <Form.Item>
+          <div style={{ display: 'flex', alignItems: 'center' }}>
+            <Checkbox size="l" checked={needExcel} onChange={(e) => setNeedExcel(e.target.checked)}>
+              是否导出为excel
+            </Checkbox>
+            <Button
+              style={{ marginLeft: 10 }}
+              type="primary"
+              onClick={() => {
+                values.data.push(getDefaultItem());
+                setValues({ data: [...values.data] });
+              }}
+            >
+              新增文件
+            </Button>
+            <Button style={{ marginLeft: 10 }} loading={loading} htmlType="submit" type="primary">
+              提交
+            </Button>
+          </div>
         </Form.Item>
       </Form>
     </div>
